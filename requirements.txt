@@ -1,0 +1,8 @@
+streamlit
+supabase
+tensorflow        # or tensorflow-cpu
+pillow
+requests
+folium
+streamlit-folium
+python-dotenv
