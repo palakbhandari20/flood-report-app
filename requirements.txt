@@ -1,8 +1,8 @@
 streamlit
-supabase
-tensorflow        # or tensorflow-cpu
-pillow
-requests
-folium
 streamlit-folium
-python-dotenv
+folium
+Pillow
+requests
+geopy
+exifread
+streamlit-javascript
