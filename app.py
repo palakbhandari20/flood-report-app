@@ -1,11 +1,21 @@
 """
-Streamlit app: Flood report UI (with both live camera capture and file upload)
-- Use webcam: st.camera_input("...") (preferred if present)
-- Or upload an image (jpg/png/heic)
-- Extract GPS EXIF if present
-- Geocode addresses (Nominatim) if needed
-- Show folium map and marker
-- Send report (with chosen image/file) to a placeholder endpoint
+Streamlit app: Flood report UI
+Features:
+- Simple user registration / login (local JSON file, demo only)
+- Upload image or file
+- Extract GPS from image EXIF (if present)
+- Reverse geocode coordinates (Nominatim) to get place name
+- Display map with marker for extracted location using folium
+- Attempt to overlay Uttarakhand GeoJSON (download at runtime) and mark the district/city
+- Allow user to select alert level (Green/Yellow/Red) or auto-assign
+- Message box to compose message to government and a Send to Government button which POSTs to a placeholder endpoint (user must replace)
+
+Notes:
+- This is a demo. Replace the GOVERNMENT_ENDPOINT with a real API endpoint and secure auth in production.
+- Requires: streamlit, pillow, exifread, requests, folium, streamlit_folium, geopy
+  pip install streamlit pillow exifread requests folium streamlit-folium geopy
+
+Run: streamlit run streamlit_flood_ui.py
 """
 
 import streamlit as st
@@ -28,6 +38,7 @@ UTTARAKHAND_GEOJSON_URL = (
 )
 
 # -------------------- Helpers --------------------
+
 def load_users():
     if not os.path.exists(USERS_FILE):
         return {}
@@ -37,9 +48,11 @@ def load_users():
         except Exception:
             return {}
 
+
 def save_users(users):
     with open(USERS_FILE, "w") as f:
         json.dump(users, f)
+
 
 def register_user(username, password):
     users = load_users()
@@ -49,13 +62,16 @@ def register_user(username, password):
     save_users(users)
     return True, "Registered"
 
+
 def verify_user(username, password):
     users = load_users()
     if username in users and users[username].get("password") == password:
         return True
     return False
 
+
 def dms_to_decimal(dms, ref):
+    # dms is a list of rationals from EXIF like [Fraction(12, 1), Fraction(34, 1), Fraction(56, 1)]
     try:
         degrees = float(dms[0])
         minutes = float(dms[1])
@@ -66,6 +82,7 @@ def dms_to_decimal(dms, ref):
         return dec
     except Exception:
         return None
+
 
 def extract_gps_from_exif(file_bytes):
     try:
@@ -87,6 +104,7 @@ def extract_gps_from_exif(file_bytes):
         pass
     return None
 
+
 def reverse_geocode(lat, lon, user_agent="flood_report_app"):
     geolocator = Nominatim(user_agent=user_agent, timeout=10)
     try:
@@ -94,6 +112,7 @@ def reverse_geocode(lat, lon, user_agent="flood_report_app"):
         return location.address if location else None
     except (GeocoderTimedOut, GeocoderUnavailable):
         return None
+
 
 def fetch_geojson(url):
     try:
@@ -105,6 +124,7 @@ def fetch_geojson(url):
     return None
 
 # -------------------- Streamlit UI --------------------
+
 st.set_page_config(page_title="Flood Report UI", layout="wide")
 st.title("Flood Report & Alert — Streamlit Demo")
 
@@ -153,45 +173,27 @@ st.subheader("Report an incident")
 col1, col2 = st.columns([1, 1])
 
 with col1:
-    # Live camera capture (preferred if present)
-    camera_image = st.camera_input("📸 Take a live photo (use your webcam)")
-
-    # Traditional upload
-    uploaded_file = st.file_uploader("Or upload image (photo with geotag preferred)", type=["png", "jpg", "jpeg", "heic"])
-
-    # Additional file upload
+    uploaded_file = st.file_uploader("Upload image (photo with geotag preferred)", type=["png", "jpg", "jpeg", "heic"])
     uploaded_other = st.file_uploader("Upload additional file (pdf/image)", type=["pdf", "png", "jpg", "jpeg"], key="other")
-
     st.write("---")
     st.markdown("*Compose message to send to government / authority*")
     message = st.text_area("Message", height=150, placeholder="Describe the incident, location, severity, contact info...")
     severity = st.selectbox("Select alert severity (color)", ["Auto-detect", "Green (Low)", "Yellow (Medium)", "Red (High)"])
     send_to_gov = st.button("Send to Government")
 
-    # Decide which image to use: prefer camera capture if present, otherwise uploaded file
-    photo_file = None
-    if camera_image is not None:
-        # preview camera capture
-        try:
-            st.image(Image.open(io.BytesIO(camera_image.getvalue())), caption="Captured photo (live)", use_column_width=True)
-        except Exception:
-            st.write("(Cannot preview captured photo)")
-        photo_file = camera_image
-    elif uploaded_file is not None:
-        try:
-            st.image(Image.open(io.BytesIO(uploaded_file.getvalue())), caption="Uploaded image", use_column_width=True)
-        except Exception:
-            st.write("(Can't preview this image)")
-        photo_file = uploaded_file
-
 with col2:
     st.markdown("*Location extraction & Map*")
     coords = None
     detected_place = None
 
-    # Try extracting GPS from chosen photo (camera or uploaded)
-    if photo_file is not None:
-        file_bytes = photo_file.getvalue()
+    if uploaded_file is not None:
+        file_bytes = uploaded_file.getvalue()
+        # preview
+        try:
+            st.image(Image.open(io.BytesIO(file_bytes)), caption="Uploaded image", use_column_width=True)
+        except Exception:
+            st.write("(Can't preview this image)")
+
         gps = extract_gps_from_exif(file_bytes)
         if gps:
             coords = gps
@@ -200,9 +202,8 @@ with col2:
             if detected_place:
                 st.caption(f"Detected address: {detected_place}")
         else:
-            st.warning("No GPS EXIF found in the image. Camera photos often have no EXIF; you can type a place name manually below.")
+            st.warning("No GPS EXIF found in image. You can type a place name manually below.")
 
-    # Manual place name fallback
     place_text = st.text_input("Or enter location name (e.g., Dehradun, Uttarakhand)")
     if not coords and place_text:
         try:
@@ -218,9 +219,9 @@ with col2:
         except Exception:
             st.error("Geocoding service unavailable — please try later")
 
-    # Show map if coords present
     if coords:
         lat, lon = coords
+        # Create folium map
         m = folium.Map(location=[lat, lon], zoom_start=10)
 
         # Attempt to fetch Uttarakhand geojson and overlay
@@ -234,7 +235,8 @@ with col2:
         # Determine marker color based on severity or auto
         color = "green"
         if severity == "Auto-detect":
-            fn = getattr(photo_file, "name", "").lower() if photo_file is not None else ""
+            # Simple heuristic: if uploaded_file and filename contains flood keywords, set yellow/red
+            fn = uploaded_file.name.lower() if uploaded_file is not None else ""
             caption = message.lower() if message else ""
             if any(k in fn for k in ["flood", "water", "flooding"]) or any(k in caption for k in ["flood", "water", "danger", "submerged"]):
                 color = "red"
@@ -249,8 +251,9 @@ with col2:
 
         folium.CircleMarker(location=[lat, lon], radius=10, color=color, fill=True, fill_opacity=0.8, popup=detected_place or "Reported location").add_to(m)
         st_data = st_folium(m, width=700, height=500)
+
     else:
-        st.info("No coordinates available yet. Upload / capture a photo with GPS or enter a place name.")
+        st.info("No coordinates available yet. Upload an image with GPS or enter a place name.")
 
 # --- Send action ---
 if send_to_gov:
@@ -266,23 +269,21 @@ if send_to_gov:
     }
 
     files = {}
-    # Attach chosen image (camera or uploaded)
-    if photo_file is not None:
-        fname = getattr(photo_file, "name", None) or "camera_photo.jpg"
-        files["image"] = (fname, photo_file.getvalue())
+    if uploaded_file is not None:
+        files["image"] = (uploaded_file.name, uploaded_file.getvalue())
     if uploaded_other is not None:
         files["file"] = (uploaded_other.name, uploaded_other.getvalue())
 
     try:
-        # NOTE: This POSTS to a placeholder endpoint. Replace with your backend API and add auth.
+        # NOTE: This POSTS to a placeholder. Replace GOVERNMENT_ENDPOINT with a real URL and use proper auth.
         r = requests.post(GOVERNMENT_ENDPOINT, data={"payload": json.dumps(payload)}, files=files, timeout=15)
         if r.status_code in (200, 201, 202):
             st.success("Report sent to the endpoint successfully (placeholder)")
         else:
             st.warning(f"Request completed but returned status {r.status_code}. This is a demo endpoint.")
     except Exception as e:
-        st.error(f"Failed to send report — error: {e}")
+        st.error(f"Failed to send report — this demo cannot reach external endpoints from here. Error: {e}")
 
-# --- Footer ---
+# --- Small helper / info footer ---
 st.markdown("---")
-st.caption("This is a demo app. Camera capture may not include GPS. For accurate location include coordinates or type place name. Replace placeholder endpoint before deploying.")
+st.caption("This is a demo Streamlit app. Replace the placeholder endpoint and secure user authentication before deploying. The app attempts to extract GPS EXIF from images and geocode place names when EXIF is missing.")
