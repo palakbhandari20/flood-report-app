@@ -1,32 +1,31 @@
-# app.py
-# Streamlit Flood Report UI with automatic browser geolocation (streamlit-javascript)
-# Save as app.py and run: streamlit run app.py
+"""
+Streamlit app: Flood report UI (with both live camera capture and file upload)
+- Use webcam: st.camera_input("...") (preferred if present)
+- Or upload an image (jpg/png/heic)
+- Extract GPS EXIF if present
+- Geocode addresses (Nominatim) if needed
+- Show folium map and marker
+- Send report (with chosen image/file) to a placeholder endpoint
+"""
 
+import streamlit as st
+from PIL import Image
+import exifread
 import io
 import json
 import os
-from datetime import datetime
-
 import requests
-import exifread
 import folium
-from PIL import Image
-import streamlit as st
 from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderUnavailable, GeocoderTimedOut
-from streamlit_javascript import st_javascript
 
 # -------------------- Config --------------------
-GOVERNMENT_ENDPOINT = "https://example.com/api/report"
 USERS_FILE = "users.json"
+GOVERNMENT_ENDPOINT = "https://example.com/api/report"  # <-- Replace with real endpoint
 UTTARAKHAND_GEOJSON_URL = (
     "https://raw.githubusercontent.com/geohacker/india/master/state/uttarakhand/uttarakhand_districts.geojson"
 )
-
-# -------------------- Streamlit page config --------------------
-st.set_page_config(page_title="Flood Report UI", layout="wide")
-st.title("Flood Report & Alert — Streamlit Demo")
 
 # -------------------- Helpers --------------------
 def load_users():
@@ -78,14 +77,10 @@ def extract_gps_from_exif(file_bytes):
         if gps_lat and gps_lon and gps_lat_ref and gps_lon_ref:
             lat = [float(x.num) / float(x.den) for x in gps_lat.values]
             lon = [float(x.num) / float(x.den) for x in gps_lon.values]
-            lat_ref = gps_lat_ref.values if hasattr(gps_lat_ref, "values") else str(gps_lat_ref)
-            lon_ref = gps_lon_ref.values if hasattr(gps_lon_ref, "values") else str(gps_lon_ref)
-            if isinstance(lat_ref, (list, tuple)):
-                lat_ref = lat_ref[0]
-            if isinstance(lon_ref, (list, tuple)):
-                lon_ref = lon_ref[0]
-            lat_dec = dms_to_decimal(lat, str(lat_ref))
-            lon_dec = dms_to_decimal(lon, str(lon_ref))
+            lat_ref = gps_lat_ref.values
+            lon_ref = gps_lon_ref.values
+            lat_dec = dms_to_decimal(lat, lat_ref)
+            lon_dec = dms_to_decimal(lon, lon_ref)
             if lat_dec is not None and lon_dec is not None:
                 return lat_dec, lon_dec
     except Exception:
@@ -93,13 +88,11 @@ def extract_gps_from_exif(file_bytes):
     return None
 
 def reverse_geocode(lat, lon, user_agent="flood_report_app"):
+    geolocator = Nominatim(user_agent=user_agent, timeout=10)
     try:
-        geolocator = Nominatim(user_agent=user_agent, timeout=10)
         location = geolocator.reverse((lat, lon), language="en")
         return location.address if location else None
     except (GeocoderTimedOut, GeocoderUnavailable):
-        return None
-    except Exception:
         return None
 
 def fetch_geojson(url):
@@ -111,7 +104,11 @@ def fetch_geojson(url):
         return None
     return None
 
-# -------------------- Authentication / Registration --------------------
+# -------------------- Streamlit UI --------------------
+st.set_page_config(page_title="Flood Report UI", layout="wide")
+st.title("Flood Report & Alert — Streamlit Demo")
+
+# --- Authentication / Registration ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
@@ -143,43 +140,38 @@ with st.sidebar:
     else:
         st.markdown(f"*User:* {st.session_state.user}")
         if st.button("Logout"):
-            # Clear relevant session state keys
-            keys_to_clear = ["logged_in", "user", "login_user", "login_pwd", "reg_user", "reg_pwd", "browser_coords", "browser_error"]
-            for k in keys_to_clear:
-                if k in st.session_state:
-                    try:
-                        del st.session_state[k]
-                    except Exception:
-                        st.session_state[k] = None
+            st.session_state.logged_in = False
+            st.experimental_rerun()
 
-            # Try to rerun; if not available, reload the page via JS
-            try:
-                st.experimental_rerun()
-            except Exception:
-                st.session_state.clear()
-                st.markdown("<script>window.location.href = window.location.href;</script>", unsafe_allow_html=True)
-                st.stop()
-
+# If not logged in, show info and stop
 if not st.session_state.logged_in:
     st.info("Please register or login from the sidebar to continue.")
     st.stop()
 
-# -------------------- Main UI --------------------
+# --- Main app ---
 st.subheader("Report an incident")
 col1, col2 = st.columns([1, 1])
 
 with col1:
+    # Live camera capture (preferred if present)
     camera_image = st.camera_input("📸 Take a live photo (use your webcam)")
+
+    # Traditional upload
     uploaded_file = st.file_uploader("Or upload image (photo with geotag preferred)", type=["png", "jpg", "jpeg", "heic"])
+
+    # Additional file upload
     uploaded_other = st.file_uploader("Upload additional file (pdf/image)", type=["pdf", "png", "jpg", "jpeg"], key="other")
+
     st.write("---")
     st.markdown("*Compose message to send to government / authority*")
     message = st.text_area("Message", height=150, placeholder="Describe the incident, location, severity, contact info...")
     severity = st.selectbox("Select alert severity (color)", ["Auto-detect", "Green (Low)", "Yellow (Medium)", "Red (High)"])
     send_to_gov = st.button("Send to Government")
 
+    # Decide which image to use: prefer camera capture if present, otherwise uploaded file
     photo_file = None
     if camera_image is not None:
+        # preview camera capture
         try:
             st.image(Image.open(io.BytesIO(camera_image.getvalue())), caption="Captured photo (live)", use_column_width=True)
         except Exception:
@@ -197,73 +189,20 @@ with col2:
     coords = None
     detected_place = None
 
-    # Browser location helper (explicit button)
-    if "browser_coords" not in st.session_state:
-        st.session_state.browser_coords = None
-        st.session_state.browser_error = None
-
-    st.markdown("**Automatic Browser Location**")
-    st.write("Click the button below to allow the browser to share your location (you'll see a permission popup).")
-
-    if st.button("Get browser location (allow in browser)"):
-        js_code = """
-        async () => {
-          if (!navigator.geolocation) {
-            return { error: "no_geolocation_support" };
-          }
-          try {
-            const perm = await navigator.permissions.query({ name: 'geolocation' });
-          } catch (e) { }
-          return new Promise((resolve) => {
-            navigator.geolocation.getCurrentPosition(
-              (pos) => { resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }); },
-              (err) => { resolve({ error: err.message || 'permission_denied_or_timeout' }); },
-              { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
-            );
-          });
-        }
-        """
-        try:
-            res = st_javascript(js_code, key=f"geo_js_{datetime.utcnow().timestamp()}")
-            if isinstance(res, dict) and "lat" in res and "lon" in res:
-                st.session_state.browser_coords = (float(res["lat"]), float(res["lon"]))
-                st.session_state.browser_error = None
-            else:
-                st.session_state.browser_coords = None
-                st.session_state.browser_error = res.get("error") if isinstance(res, dict) else "unknown_error"
-        except Exception as e:
-            st.session_state.browser_coords = None
-            st.session_state.browser_error = str(e)
-
-    if st.session_state.browser_coords:
-        coords = st.session_state.browser_coords
-        detected_place = reverse_geocode(*coords)
-        st.success(f"Browser geolocation: {coords[0]:.6f}, {coords[1]:.6f}")
-        if detected_place:
-            st.caption(f"Detected address: {detected_place}")
-    else:
-        if st.session_state.get("browser_error"):
-            st.info("Automatic location unavailable: " + str(st.session_state.browser_error))
+    # Try extracting GPS from chosen photo (camera or uploaded)
+    if photo_file is not None:
+        file_bytes = photo_file.getvalue()
+        gps = extract_gps_from_exif(file_bytes)
+        if gps:
+            coords = gps
+            detected_place = reverse_geocode(*coords)
+            st.success(f"GPS extracted: {coords[0]:.6f}, {coords[1]:.6f}")
+            if detected_place:
+                st.caption(f"Detected address: {detected_place}")
         else:
-            st.info("Automatic location not obtained. Click 'Get browser location' and allow location in browser when prompted.")
+            st.warning("No GPS EXIF found in the image. Camera photos often have no EXIF; you can type a place name manually below.")
 
-    # If no browser coords, try image EXIF
-    if (not coords) and (photo_file is not None):
-        try:
-            file_bytes = photo_file.getvalue()
-            gps = extract_gps_from_exif(file_bytes)
-            if gps:
-                coords = gps
-                detected_place = reverse_geocode(*coords)
-                st.success(f"GPS extracted: {coords[0]:.6f}, {coords[1]:.6f}")
-                if detected_place:
-                    st.caption(f"Detected address: {detected_place}")
-            else:
-                st.warning("No GPS EXIF found in the image. Camera photos often have no EXIF; you can type a place name manually below.")
-        except Exception:
-            st.warning("Could not read image EXIF — maybe unsupported format.")
-
-    # Manual geocoding fallback
+    # Manual place name fallback
     place_text = st.text_input("Or enter location name (e.g., Dehradun, Uttarakhand)")
     if not coords and place_text:
         try:
@@ -279,10 +218,12 @@ with col2:
         except Exception:
             st.error("Geocoding service unavailable — please try later")
 
-    # Show map
+    # Show map if coords present
     if coords:
         lat, lon = coords
-        m = folium.Map(location=[lat, lon], zoom_start=12)
+        m = folium.Map(location=[lat, lon], zoom_start=10)
+
+        # Attempt to fetch Uttarakhand geojson and overlay
         gj = fetch_geojson(UTTARAKHAND_GEOJSON_URL)
         if gj:
             try:
@@ -290,6 +231,7 @@ with col2:
             except Exception:
                 pass
 
+        # Determine marker color based on severity or auto
         color = "green"
         if severity == "Auto-detect":
             fn = getattr(photo_file, "name", "").lower() if photo_file is not None else ""
@@ -297,7 +239,7 @@ with col2:
             if any(k in fn for k in ["flood", "water", "flooding"]) or any(k in caption for k in ["flood", "water", "danger", "submerged"]):
                 color = "red"
             else:
-                color = "orange"
+                color = "yellow"
         elif severity.startswith("Green"):
             color = "green"
         elif severity.startswith("Yellow"):
@@ -308,15 +250,14 @@ with col2:
         folium.CircleMarker(location=[lat, lon], radius=10, color=color, fill=True, fill_opacity=0.8, popup=detected_place or "Reported location").add_to(m)
         st_data = st_folium(m, width=700, height=500)
     else:
-        st.info("No coordinates available yet. Allow browser location, upload/capture a photo with GPS, or enter a place name.")
+        st.info("No coordinates available yet. Upload / capture a photo with GPS or enter a place name.")
 
-# -------------------- Send action --------------------
+# --- Send action ---
 if send_to_gov:
     payload = {
         "user": st.session_state.user,
         "message": message,
         "severity": severity,
-        "timestamp": datetime.utcnow().isoformat() + "Z",
         "location": {
             "latitude": coords[0] if coords else None,
             "longitude": coords[1] if coords else None,
@@ -325,6 +266,7 @@ if send_to_gov:
     }
 
     files = {}
+    # Attach chosen image (camera or uploaded)
     if photo_file is not None:
         fname = getattr(photo_file, "name", None) or "camera_photo.jpg"
         files["image"] = (fname, photo_file.getvalue())
@@ -332,13 +274,15 @@ if send_to_gov:
         files["file"] = (uploaded_other.name, uploaded_other.getvalue())
 
     try:
+        # NOTE: This POSTS to a placeholder endpoint. Replace with your backend API and add auth.
         r = requests.post(GOVERNMENT_ENDPOINT, data={"payload": json.dumps(payload)}, files=files, timeout=15)
         if r.status_code in (200, 201, 202):
-            st.success("Report sent to the endpoint successfully (placeholder).")
+            st.success("Report sent to the endpoint successfully (placeholder)")
         else:
             st.warning(f"Request completed but returned status {r.status_code}. This is a demo endpoint.")
     except Exception as e:
         st.error(f"Failed to send report — error: {e}")
 
+# --- Footer ---
 st.markdown("---")
-st.caption("Demo app: replace placeholder endpoint before production. Browser geolocation requires HTTPS (or localhost for testing).")
+st.caption("This is a demo app. Camera capture may not include GPS. For accurate location include coordinates or type place name. Replace placeholder endpoint before deploying.")
