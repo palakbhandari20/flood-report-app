@@ -1,21 +1,5 @@
 """
 Streamlit app: Flood report UI
-Features:
-- Simple user registration / login (local JSON file, demo only)
-- Upload image or file
-- Extract GPS from image EXIF (if present)
-- Reverse geocode coordinates (Nominatim) to get place name
-- Display map with marker for extracted location using folium
-- Attempt to overlay Uttarakhand GeoJSON (download at runtime) and mark the district/city
-- Allow user to select alert level (Green/Yellow/Red) or auto-assign
-- Message box to compose message to government and a Send to Government button which POSTs to a placeholder endpoint (user must replace)
-
-Notes:
-- This is a demo. Replace the GOVERNMENT_ENDPOINT with a real API endpoint and secure auth in production.
-- Requires: streamlit, pillow, exifread, requests, folium, streamlit_folium, geopy
-  pip install streamlit pillow exifread requests folium streamlit-folium geopy
-
-Run: streamlit run streamlit_flood_ui.py
 """
 
 import streamlit as st
@@ -33,8 +17,11 @@ from geopy.exc import GeocoderUnavailable, GeocoderTimedOut
 
 # -------------------- Config --------------------
 USERS_FILE = "users.json"
-GOVERNMENT_ENDPOINT = "http://127.0.0.1:8000/report"  # <-- Replace with real endpoint
-API = "http://127.0.0.1:8000"
+
+# ✅ Reads from environment variable — set this in Streamlit Cloud secrets
+API = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
+GOVERNMENT_ENDPOINT = f"{API}/report"
+
 UTTARAKHAND_GEOJSON_URL = (
     "https://raw.githubusercontent.com/geohacker/india/master/state/uttarakhand/uttarakhand_districts.geojson"
 )
@@ -73,7 +60,6 @@ def verify_user(username, password):
 
 
 def dms_to_decimal(dms, ref):
-    # dms is a list of rationals from EXIF like [Fraction(12, 1), Fraction(34, 1), Fraction(56, 1)]
     try:
         degrees = float(dms[0])
         minutes = float(dms[1])
@@ -128,9 +114,9 @@ def fetch_geojson(url):
 # -------------------- Streamlit UI --------------------
 
 st.set_page_config(page_title="Flood Report UI", layout="wide")
-st.title("Flood Report & Alert — Streamlit Demo")
+st.title("🌊 Flood Report & Alert System")
 
-# --- Authentication / Registration ---
+# --- Authentication ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
@@ -160,16 +146,14 @@ with st.sidebar:
                 else:
                     st.error(msg)
     else:
-        st.markdown(f"*User:* {st.session_state.user}")
+        st.markdown(f"**User:** {st.session_state.user}")
         if st.button("Logout"):
             st.session_state.logged_in = False
-            st.experimental_rerun()
+            st.rerun()
 
-# If not logged in, show info and stop
 if not st.session_state.logged_in:
     st.info("Please register or login from the sidebar to continue.")
     st.stop()
-
 
 # --- Main app ---
 st.subheader("Report an incident")
@@ -179,19 +163,18 @@ with col1:
     uploaded_file = st.file_uploader("Upload image (photo with geotag preferred)", type=["png", "jpg", "jpeg", "heic"])
     uploaded_other = st.file_uploader("Upload additional file (pdf/image)", type=["pdf", "png", "jpg", "jpeg"], key="other")
     st.write("---")
-    st.markdown("*Compose message to send to government / authority*")
+    st.markdown("**Compose message to send to government / authority**")
     message = st.text_area("Message", height=150, placeholder="Describe the incident, location, severity, contact info...")
     severity = st.selectbox("Select alert severity (color)", ["Auto-detect", "Green (Low)", "Yellow (Medium)", "Red (High)"])
     send_to_gov = st.button("Send to Government")
 
 with col2:
-    st.markdown("*Location extraction & Map*")
+    st.markdown("**Location extraction & Map**")
     coords = None
     detected_place = None
 
     if uploaded_file is not None:
         file_bytes = uploaded_file.getvalue()
-        # preview
         try:
             st.image(Image.open(io.BytesIO(file_bytes)), caption="Uploaded image", use_column_width=True)
         except Exception:
@@ -224,10 +207,8 @@ with col2:
 
     if coords:
         lat, lon = coords
-        # Create folium map
         m = folium.Map(location=[lat, lon], zoom_start=10)
 
-        # Attempt to fetch Uttarakhand geojson and overlay
         gj = fetch_geojson(UTTARAKHAND_GEOJSON_URL)
         if gj:
             try:
@@ -235,10 +216,8 @@ with col2:
             except Exception:
                 pass
 
-        # Determine marker color based on severity or auto
         color = "green"
         if severity == "Auto-detect":
-            # Simple heuristic: if uploaded_file and filename contains flood keywords, set yellow/red
             fn = uploaded_file.name.lower() if uploaded_file is not None else ""
             caption = message.lower() if message else ""
             if any(k in fn for k in ["flood", "water", "flooding"]) or any(k in caption for k in ["flood", "water", "danger", "submerged"]):
@@ -254,77 +233,51 @@ with col2:
 
         folium.CircleMarker(location=[lat, lon], radius=10, color=color, fill=True, fill_opacity=0.8, popup=detected_place or "Reported location").add_to(m)
         st_data = st_folium(m, width=700, height=500)
-
     else:
         st.info("No coordinates available yet. Upload an image with GPS or enter a place name.")
 
 # --- Send action ---
 if send_to_gov:
-
-    # Validation
     if not coords:
         st.error("❌ Please provide location (image with GPS or enter manually)")
     elif uploaded_file is None:
         st.error("❌ Please upload an image")
     else:
         try:
-            files = {
-                "image": (uploaded_file.name, uploaded_file.getvalue())
-            }
-
+            files = {"image": (uploaded_file.name, uploaded_file.getvalue())}
             data = {
                 "user": st.session_state.user,
                 "message": message,
                 "latitude": coords[0],
                 "longitude": coords[1]
             }
-
-            response = requests.post(
-                GOVERNMENT_ENDPOINT,
-                data=data,
-                files=files
-            )
-
+            response = requests.post(GOVERNMENT_ENDPOINT, data=data, files=files)
             if response.status_code == 200:
                 result = response.json()
-                st.success(f"✅ Report sent successfully! ML Result: {result['prediction']}")
+                st.success(f"✅ Report sent! ML Result: {result['prediction']}")
             else:
                 st.error("❌ Failed to send report")
-
         except Exception as e:
             st.error(f"Error: {e}")
 
-# 🚨 Government Alerts Section
-API = "http://127.0.0.1:8000"
-
+# --- Alerts Section ---
 st.subheader("🚨 Government Alerts")
-
-placeholder = st.empty()
-
-while True:
-    try:
-        username = st.session_state.user
-        res = requests.get(f"{API}/alerts/{username}")
-        alerts = res.json()
-
-        with placeholder.container():
-            if alerts:
-                for a in alerts[::-1]:
-                    if a["zone"] == "RED":
-                        st.error(f"🚨 {a['message']}")
-                    elif a["zone"] == "ORANGE":
-                        st.warning(f"⚠️ {a['message']}")
-                    else:
-                        st.success(f"✅ {a['message']}")
+try:
+    username = st.session_state.user
+    res = requests.get(f"{API}/alerts/{username}", timeout=5)
+    alerts = res.json()
+    if alerts:
+        for a in alerts[::-1]:
+            if a["zone"] == "RED":
+                st.error(f"🚨 {a['message']}")
+            elif a["zone"] == "ORANGE":
+                st.warning(f"⚠️ {a['message']}")
             else:
-                st.info("No alerts yet")
+                st.success(f"✅ {a['message']}")
+    else:
+        st.info("No alerts yet")
+except Exception:
+    st.warning("⚠️ Unable to fetch alerts from backend")
 
-    except:
-        st.warning("⚠️ Unable to fetch alerts")
-
-    time.sleep(5)
-    st.rerun()
-    
-# --- Small helper / info footer ---
 st.markdown("---")
-st.caption("This is a demo Streamlit app. Replace the placeholder endpoint and secure user authentication before deploying. The app attempts to extract GPS EXIF from images and geocode place names when EXIF is missing.")
+st.caption("Flood Report & Alert System — powered by AI and real-time data.")
