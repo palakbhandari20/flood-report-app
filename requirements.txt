@@ -13,4 +13,3 @@ streamlit-folium
 geopy
 numpy
 python-dotenv
-tensorflow
