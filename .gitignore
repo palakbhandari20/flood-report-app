@@ -1,0 +1,35 @@
+# Environment
+.env
+*.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Local database
+*.db
+*.sqlite
+
+# Local uploads
+data/uploads/
+
+# ML model (too large for GitHub — upload separately)
+ml_model/flood_saved_model/
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+venv/
+env/
+user_app/venv/
+gov_dashboard/venv/
