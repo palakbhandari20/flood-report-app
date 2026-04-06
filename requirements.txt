@@ -13,5 +13,5 @@ streamlit-folium
 geopy
 numpy
 python-dotenv
-tensorflow
+tensorflow==2.15.0
 huggingface-hub
