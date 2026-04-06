@@ -13,3 +13,5 @@ streamlit-folium
 geopy
 numpy
 python-dotenv
+tensorflow
+huggingface-hub
