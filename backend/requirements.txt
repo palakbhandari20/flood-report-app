@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+sqlalchemy
+python-multipart
+pillow
+requests
+httpx
+psycopg2-binary
+numpy
+python-dotenv
+huggingface-hub
+tensorflow==2.15.0
